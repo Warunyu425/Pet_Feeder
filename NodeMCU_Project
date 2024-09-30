@@ -1,0 +1,530 @@
+#define BLYNK_PRINT Serial
+#define BLYNK_TEMPLATE_ID "TMPL6fsBq1T5S"
+#define BLYNK_TEMPLATE_NAME "miniproject"
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Servo.h>
+#include <TimeLib.h>
+#include <DHT.h>
+
+// ####################### การตั้งค่า WiFi และ Blynk #####################
+char auth[] = "4cPtE_3_w4YmGkJnRB2_LDbUGINpMW1Q";
+char ssid[] = "TUNGNGERN-202";
+char pass[] = "tungngernBD";
+
+// ####################### กำหนด Pin และ Hardware #####################
+#define TEMPERATURE       V1                                  // Blynk virtual pin สำหรับเก็บค่าอุณหภูมิ
+#define HUMIDITY          V2                                  // Blynk virtual pin สำหรับเก็บค่าความชื้น
+#define LCD_LINE_1        V3                                  // Blynk virtual pin สำหรับแสดงข้อความบรรทัดแรกของ LCD
+#define LCD_LINE_2        V4                                  // Blynk virtual pin สำหรับแสดงข้อความบรรทัดที่สองของ LCD
+#define TIMER_1           V5                                  // Blynk virtual pin สำหรับตั้งค่า Timer 1
+#define TIMER_2           V6                                  // Blynk virtual pin สำหรับตั้งค่า Timer 2
+#define TIMER_3           V7                                  // Blynk virtual pin สำหรับตั้งค่า Timer 3
+#define EN_TIMER_1        V8                                  // Blynk virtual pin สำหรับเปิดใช้งาน Timer 1
+#define EN_TIMER_2        V9                                  // Blynk virtual pin สำหรับเปิดใช้งาน Timer 1
+#define EN_TIMER_3        V10                                 // Blynk virtual pin สำหรับเปิดใช้งาน Timer 1
+#define REPEAT_1          V11                                 // Blynk virtual pin สำหรับปรับจำนวนครั้งการให้อาหาร (feed_rep)ใน Timer 1
+#define REPEAT_2          V12                                 // Blynk virtual pin สำหรับปรับจำนวนครั้งการให้อาหาร (feed_rep)ใน Timer 2
+#define REPEAT_3          V13                                 // Blynk virtual pin สำหรับปรับจำนวนครั้งการให้อาหาร (feed_rep)ใน Timer 3
+#define MANUAL_FEED       V14                                 // Blynk virtual pin สำหรับใช้งาน manual feed
+#define FEED_COUNT        V15                                 // Blynk virtual pin สำหรับ feed count
+#define CLEAR_FEED        V16                                 // Blynk virtual pin สำหรับรีเซ็ต feed count
+#define DOOR_STATUS       V17                                 // Blynk virtual pin สำหรับแสดงสถานะของประตู (open/close)
+#define SERVO_PIN         D0                                  // Pin สำหรับควบคุม Servo motor
+#define IR_SENSOR_PIN     D2                                  // Pin สำหรับเซ็นเซอร์ IR เพื่อใช้เช็คสถานะอาหาร
+#define DHTPIN            D7                                  // Pin สำหรับเซ็นเซอร์ DHT11
+#define DHTTYPE           DHT11                               // ประเภทของเซ็นเซอร์ DHT
+#define TRIGPIN           D4                                  // Pin สำหรับเซ็นเซอร์ Ultrasonic (Trig)
+#define ECHOPIN           D5                                  // Pin สำหรับเซ็นเซอร์ Ultrasonic (Echo)
+#define EMPTY_FOOD        (digitalRead(IR_SENSOR_PIN))        // เช็คสถานะอาหารจากเซ็นเซอร์ IR
+#define TIMER_NUMBER      3                                   // จำนวน Timer ทั้งหมด
+
+// Setup Servo และเซ็นเซอร์ต่างๆ
+Servo myservo;                    // Servo
+DHT dht(DHTPIN, DHTTYPE);         // DHT sensor
+BlynkTimer timer;                 // Blynk Timer
+long duration, distance;          // กำหนดตัวแปรให้เซ็นเซอร์ ultrasonic
+
+// สร้าง Structure สำหรับจัดการเวลาในการป้อนอาหาร
+struct str_command {
+  unsigned char start_time_hour[TIMER_NUMBER];  // เก็บค่าชั่วโมงเริ่มต้นสำหรับแต่ละ Timer
+  unsigned char start_time_min[TIMER_NUMBER];   // เก็บค่านาทีเริ่มต้นสำหรับแต่ละ Timer
+  unsigned char day_timer[TIMER_NUMBER];        // เก็บค่าวันที่สำหรับแต่ละ Timer
+  unsigned char feed_repetition[TIMER_NUMBER];  // เก็บค่าจำนวนครั้งการให้อาหารสำหรับแต่ละ Timer
+  bool flag_timer_en[TIMER_NUMBER];             // Flags สำหรับเก็บสถานะเปิด/ปิดของแต่ละ Timer
+};
+struct str_command feed_timer;  // สร้างตัวแปรสำหรับเก็บข้อมูลของ feed_timer
+
+// ตัวแปรสำหรับเก็บข้อมูลเวลาจาก RTC (real-time clock) ของ ESP8266 เพื่อซิงค์กับเวลาของ Blynk Server
+unsigned char rtc_hour;                         // เก็บค่าชั่วโมงปัจจุบันจาก RTC ของ ESP8266
+unsigned char rtc_min;                          // เก็บค่านาทีปัจจุบันจาก RTC ของ ESP8266
+unsigned char rtc_weekday;                      // เก็บค่าของวันในสัปดาห์ปัจจุบันจาก RTC ของ ESP8266 (ในรูปแบบตัวเลข)
+
+unsigned char server_hour;                      // เก็บค่าชั่วโมงที่ซิงค์จากเซิร์ฟเวอร์ Blynk
+unsigned char server_min;                       // เก็บค่านาทีที่ซิงค์จากเซิร์ฟเวอร์ Blynk
+unsigned char server_weekday;                   // เก็บค่าวันในสัปดาห์ที่ซิงค์จากเซิร์ฟเวอร์ Blynk (ในรูปแบบตัวเลข)
+
+// ตัวแปรสำหรับจัดการการให้อาหาร
+unsigned char feed_rep_count;                   // เก็บค่าจำนวนการทำซ้ำการป้อนอาหาร
+unsigned int pet_feed_count;                    // เก็บจำนวนการป้อนอาหารที่เกิดขึ้น
+
+// Flags สำหรับการตรวจสอบสถานะอาหารและจัดการ Servo
+bool flag_food_check;                           // Flag สำหรับเช็คว่ามีอาหารหรือไม่
+bool flag_servo_on_food_check;                  // Flag สำหรับควบคุม Servo ตอนตรวจสอบสถานะอาหาร
+unsigned char food_check_count;                 // เก็บค่าจำนวนครั้งในการตรวจสอบอาหาร
+unsigned char food_detected_timeout;            // Timeout ของการตรวจสอบสถานะอาหาร
+
+// Flags สำหรับ RTC และ Synchronization
+bool rtc_synchronized;                          // Flag เช็คสถานะว่าซิงค์ RTC กับ Blynk Server แล้วหรือไม่
+bool flag_servo_on;                             // Flag สำหรับควบคุม Server
+bool flag_servo_on_buf;                         // Buffer Flag เก็บ State ของ Servo
+
+bool blynk_manual_feed_update;                  //Flag สำหรับ Manual Feed
+
+// ####################### ฟังก์ชัน ####################################
+
+// ฟังก์ชันสำหรับตั้งค่าสถานะเปิด/ปิดของ Timer ผ่าน Blynk App
+void blynk_timer_en_set(unsigned char idx, unsigned char value)
+{
+  feed_timer.flag_timer_en[idx] = value;
+  Serial.println("Timer " + String(idx+1) + " Set: " + String(value));
+}
+
+// ฟังก์ชันสำหรับตั้งค่าจำนวนครั้งการให้อาหารผ่าน Blynk App
+void blynk_feed_repetition_set(unsigned char idx, unsigned char value)
+{
+  feed_timer.feed_repetition[idx] = value;
+  Serial.println("Feed Repetition " + String(idx+1) + " Set: " + String(value));
+}
+
+// ฟังก์ชันสำหรับตั้งวันและเวลาให้ Timer ผ่าน Blynk App
+void blynk_timer_set(unsigned char idx, unsigned char start_hr, unsigned char start_min, unsigned char dow)
+{
+  feed_timer.start_time_hour[idx] = start_hr;
+  feed_timer.start_time_min[idx] = start_min;
+  feed_timer.day_timer[idx] = dow;  //Day of Week
+
+  Serial.println();
+  Serial.println("Timer " + String(idx + 1) + ":");
+  Serial.println("Start Time: " + String(start_hr) + ":" + String(start_min));
+  Serial.print("Day set: ");
+  Serial.println(dow, HEX);
+  Serial.println();
+  
+}
+
+// ฟังก์ชันที่จะถูกเรียกใช้เมื่อ ESP8266 เชื่อมต่อกับ Blynk Server สำเร็จ
+BLYNK_CONNECTED()
+{
+  Serial.println("BLYNK SERVER CONNECTED !!!");
+  
+  // ซิงค์ Virtual Pins กับ Server เพื่อรับค่าจาก Blynk App
+  Blynk.syncVirtual(TIMER_1);
+  Blynk.syncVirtual(TIMER_2);
+  Blynk.syncVirtual(TIMER_3);
+  Blynk.syncVirtual(EN_TIMER_1);
+  Blynk.syncVirtual(EN_TIMER_2);
+  Blynk.syncVirtual(EN_TIMER_3);
+  Blynk.syncVirtual(REPEAT_1);
+  Blynk.syncVirtual(REPEAT_2);
+  Blynk.syncVirtual(REPEAT_3);
+  Blynk.syncVirtual(FEED_COUNT);
+  // ซิงค์ RTC กับ Blynk Server
+  Blynk.sendInternal("rtc", "sync");
+}  
+
+// ฟังก์ชันสำหรับส่งค่าอุณหภูมิ ความชื้น และสถานะของประตูไปยัง Blynk
+void sendSensorData() {
+  //ส่วนของ DHT11 sensor
+  float temperature = dht.readTemperature();  // อ่านค่าอุณหภูมิ (องศาเซลเซียส)
+  float humidity = dht.readHumidity();        // อ่านค่าความชื้น (%)
+  Blynk.virtualWrite(TEMPERATURE, temperature);  // ส่งค่าอุณหภูมิไปยัง Virtual Pin V1
+  Blynk.virtualWrite(HUMIDITY, humidity);     // ส่งค่าความชื้นไปยัง Virtual Pin V2
+
+  //ส่วนของ Ultrasonic Sensor
+  digitalWrite(TRIGPIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIGPIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIGPIN, LOW);
+  duration = pulseIn(ECHOPIN,HIGH);
+  distance = duration * 0.034 / 2;
+  if (distance > 25){
+    Blynk.virtualWrite(DOOR_STATUS, "OPEN");
+  } else {
+    Blynk.virtualWrite(DOOR_STATUS, "CLOSE");
+  }
+}
+
+// ฟังก์ชันทำ Manual Feeding สั่งการผ่าน Blynk App
+BLYNK_WRITE ( MANUAL_FEED )
+{
+  int val = param.asInt();  // อ่านค่าที่ส่งมาจาก Blynk App (0,1) เก็บในตัวแปร
+  if ( val )
+   flag_servo_on = 1;       // ถ้าตัวแปรมีค่าเป็น 1 สั่งให้ Servo ทำงาน
+}
+
+// ฟังก์ชันทำการอัพเดทค่า Feed count จาก Blynk App
+BLYNK_WRITE ( FEED_COUNT )
+{
+  pet_feed_count = param.asInt(); //อัพเดทค่า feed count จากค่าใน Blynk App
+}
+
+// ฟังก์ชันรีเซ็ตค่า Feed Count
+BLYNK_WRITE ( CLEAR_FEED )
+{
+  int val = param.asInt(); // อ่านค่าที่ส่งมาจาก App
+  if ( val )
+  {
+    pet_feed_count = 0;
+    Blynk.virtualWrite(LCD_LINE_2, pet_feed_count);  // อัพเดทค่าใน LCD
+    Blynk.virtualWrite(FEED_COUNT, pet_feed_count);  // อัพเดทค่าใน Blynk Server
+  }
+}
+
+// ฟังก์ชันสำหรับกำหนดจำนวนครั้งการให้อาหารในแต่ละ Timer
+BLYNK_WRITE (REPEAT_1)
+{
+  int val = param.asInt();              // รับค่าจำนวนครั้งจาก Blynk App เก็บในตัวแปร
+  blynk_feed_repetition_set(0, val);    // Assign ค่านั้นให้กับ Timer ตัวแรก
+}
+BLYNK_WRITE (REPEAT_2)
+{
+  int val = param.asInt();  
+  blynk_feed_repetition_set(1, val);
+}
+BLYNK_WRITE (REPEAT_3)
+{
+  int val = param.asInt();  
+  blynk_feed_repetition_set(2, val);
+}
+
+// ฟังก์ชันสำหรับเปิด/ปิด Timer แต่ละตัว
+BLYNK_WRITE (EN_TIMER_1)
+{
+  int val = param.asInt();  
+  blynk_timer_en_set(0, val);
+}
+BLYNK_WRITE (EN_TIMER_2)
+{
+  int val = param.asInt();  
+  blynk_timer_en_set(1, val);
+}
+BLYNK_WRITE (EN_TIMER_3)
+{
+  int val = param.asInt(); 
+  blynk_timer_en_set(2, val);
+}
+
+// ฟังก์ชันอัปเดตค่า TIMER_1 จาก Blynk
+BLYNK_WRITE( TIMER_1 )
+{
+  unsigned char week_day;                                   // ตัวแปรสำหรับเก็บข้อมูลวัน
+  unsigned char start_hr, start_min;                        // ตัวแปรสำหรับเก็บข้อมูลชั่วโมงและนาทีเริ่มต้น
+  
+  TimeInputParam  t(param);                                 // รับค่าพารามิเตอร์เวลาจาก Blynk
+  
+  if (t.hasStartTime() )                                    // ตรวจสอบว่ามีการตั้งค่าเวลาเริ่มต้นหรือไม่
+  {
+     start_hr = t.getStartHour();                           // ดึงชั่วโมงเริ่มต้นจาก Blynk App
+     start_min = t.getStartMinute();                        // ดึงนาทีเริ่มต้นจาก Blynk App
+     week_day = 0;                                          // เริ่มต้นค่าของวันในสัปดาห์เป็น 0
+     for (int i = 1; i <= 7; i++)                           // ลูปเพื่อเช็คทุกวันในสัปดาห์
+     {
+       if (t.isWeekdaySelected(i))                          // จะเป็น "TRUE" หากมีการเลือกวันหรือหากไม่มีการเลือกใดๆ
+         week_day |= (0x01 << (i-1));                       // ใช้บิตชิฟต์เพื่อกำหนดค่าวันที่เลือกในตัวแปร week_day
+     }
+     blynk_timer_set(0, start_hr, start_min, week_day);     // เรียกใช้ฟังก์ชัน blynk_timer_set โดยส่งค่าเวลาเริ่มต้นและวันที่เลือกเข้าไป
+  }
+  else
+  {
+    Serial.println("Disabled Timer 1");                     // ถ้าไม่มีการตั้งเวลาเริ่มต้น จะแสดงข้อความว่า "Disabled Timer 1" บน Serial Monitor
+  }
+}
+
+// ฟังก์ชันอัปเดตค่า TIMER_2 จาก Blynk
+BLYNK_WRITE( TIMER_2 )
+{
+  unsigned char week_day;                  // ตัวแปรสำหรับเก็บข้อมูลวัน
+  unsigned char start_hr, start_min;       // ตัวแปรสำหรับเก็บข้อมูลชั่วโมงและนาทีเริ่มต้น
+  TimeInputParam  t(param);                // รับค่าพารามิเตอร์เวลาจาก Blynk
+  if (t.hasStartTime() )                   // ตรวจสอบว่ามีการตั้งค่าเวลาเริ่มต้นหรือไม่
+  {
+     start_hr = t.getStartHour();          // ดึงชั่วโมงเริ่มต้นจาก Blynk App
+     start_min = t.getStartMinute();       // ดึงนาทีเริ่มต้นจาก Blynk App
+     week_day = 0;                         // เริ่มต้นค่าของวันในสัปดาห์เป็น 0
+     for (int i = 1; i <= 7; i++)          // ลูปเพื่อเช็คทุกวันในสัปดาห์
+     {
+       if (t.isWeekdaySelected(i))         // จะเป็น "TRUE" หากมีการเลือกวันหรือหากไม่มีการเลือกใดๆ
+         week_day |= (0x01 << (i-1));      // ใช้บิตชิฟต์เพื่อกำหนดค่าวันที่เลือกในตัวแปร week_day
+     }
+     blynk_timer_set(1, start_hr, start_min, week_day);   // เรียกใช้ฟังก์ชัน blynk_timer_set โดยส่งค่าเวลาเริ่มต้นและวันที่เลือกเข้าไป
+  }
+  else
+  {
+    Serial.println("Disabled Timer 2");    // ถ้าไม่มีการตั้งเวลาเริ่มต้น จะแสดงข้อความว่า "Disabled Timer 2" บน Serial Monitor
+  }
+}
+
+// ฟังก์ชันอัปเดตค่า TIMER_3 จาก Blynk
+BLYNK_WRITE( TIMER_3 )
+{
+  unsigned char week_day;                  // ตัวแปรสำหรับเก็บข้อมูลวัน
+  unsigned char start_hr, start_min;       // ตัวแปรสำหรับเก็บข้อมูลชั่วโมงและนาทีเริ่มต้น
+  TimeInputParam  t(param);                // รับค่าพารามิเตอร์เวลาจาก Blynk
+  if (t.hasStartTime() )                   // ตรวจสอบว่ามีการตั้งค่าเวลาเริ่มต้นหรือไม่
+  {
+     start_hr = t.getStartHour();          // ดึงชั่วโมงเริ่มต้นจาก Blynk App
+     start_min = t.getStartMinute();       // ดึงนาทีเริ่มต้นจาก Blynk App
+     week_day = 0;                         // เริ่มต้นค่าของวันในสัปดาห์เป็น 0
+     for (int i = 1; i <= 7; i++)          // ลูปเพื่อเช็คทุกวันในสัปดาห์
+     {
+       if (t.isWeekdaySelected(i))         // จะเป็น "TRUE" หากมีการเลือกวันหรือหากไม่มีการเลือกใดๆ
+         week_day |= (0x01 << (i-1));      // ใช้บิตชิฟต์เพื่อกำหนดค่าวันที่เลือกในตัวแปร week_day
+     }
+
+     blynk_timer_set(2, start_hr, start_min, week_day);   // เรียกใช้ฟังก์ชัน blynk_timer_set โดยส่งค่าเวลาเริ่มต้นและวันที่เลือกเข้าไป
+  }
+  else
+  {
+    Serial.println("Disabled Timer 3");    // ถ้าไม่มีการตั้งเวลาเริ่มต้น จะแสดงข้อความว่า "Disabled Timer 3" บน Serial Monitor
+  }
+}
+// ฟังก์ชันสำหรับซิงโครไนซ์เวลาจาก Blynk Server ไปยังระบบ RTC ของอุปกรณ์
+BLYNK_WRITE( InternalPinRTC ) 
+{
+  const unsigned long DEFAULT_TIME = 1357041600;      // กำหนดค่าเวลามาตรฐาน (Jan 1 2013) เป็นค่าเริ่มต้น
+  unsigned long blynkTime = param.asLong();           // รับค่าเวลาจาก Blynk Server แล้วเก็บไว้ในตัวแปร blynkTime
+  
+  if ( blynkTime >= DEFAULT_TIME )                    // เช็คว่าถ้าเวลาที่ได้จาก Blynk Server มากกว่าหรือเท่ากับค่า DEFAULT_TIME
+  {
+    setTime(blynkTime);                               // ตั้งค่าเวลาในระบบเป็นเวลาที่ได้รับจาก Blynk Server
+
+    server_hour = hour();                             // ดึงค่าชั่วโมงปัจจุบันจากระบบแล้วเก็บไว้ในตัวแปร server_hour
+    server_min = minute();                            // ดึงค่านาทีปัจจุบันจากระบบแล้วเก็บไว้ในตัวแปร server_min 
+    server_weekday = weekday();                       // ดึงค่าวันในสัปดาห์ปัจจุบัน (1=อาทิตย์, 7=เสาร์) แล้วเก็บไว้ในตัวแปร server_weekday
+  
+    if ( server_weekday == 1 )                        // ถ้าวันในสัปดาห์เป็นวันอาทิตย์ (1)
+      server_weekday = 7;                             // แปลงค่าเป็น 7 (ซึ่งคือวันเสาร์ในระบบนี้)
+    else
+      server_weekday -= 1;                            // ถ้าไม่ใช่วันอาทิตย์ ก็ลดค่าวันลง 1 (เพื่อทำให้วันเริ่มต้นจากวันจันทร์แทน)
+
+    if ( rtc_synchronized == 0 )                      // ถ้ายังไม่มีการซิงโครไนซ์ RTC มาก่อน
+    {
+      rtc_hour = server_hour;                         // ตั้งค่า RTC ชั่วโมงให้ตรงกับเวลาจากเซิร์ฟเวอร์
+      rtc_min = server_min;                           // ตั้งค่า RTC นาทีให้ตรงกับเวลาจากเซิร์ฟเวอร์
+      rtc_weekday = server_weekday;                   // ตั้งค่า RTC วันในสัปดาห์ให้ตรงกับวันจากเซิร์ฟเวอร์
+    }
+    
+    rtc_synchronized = 1;                             // ทำเครื่องหมายว่า RTC ได้ซิงโครไนซ์แล้ว
+  }
+}
+
+// ตัวแปรสำหรับจัดการเวลา
+unsigned long ms_min_buf;     // บัฟเฟอร์สำหรับเก็บค่ามิลลิวินาทีที่นับผ่านมาแล้วในแต่ละนาที
+unsigned long ms_sec_buf;     // บัฟเฟอร์สำหรับเก็บค่ามิลลิวินาทีที่นับผ่านมาแล้วในแต่ละวินาที
+unsigned char time_10_sec;    // ตัวแปรสำหรับนับเวลาทีละ 10 วินาที
+
+// ฟังก์ชันสำหรับตรวจสอบและจัดการเวลา
+void checkTime() 
+{
+  unsigned long time_ms = millis();                     // นับเวลาที่ผ่านไปตั้งแต่บอร์ดเริ่มทำงานในหน่วยมิลลิวินาที
+  unsigned long ms_min_diff = time_ms - ms_min_buf;     // คำนวณความต่างของเวลาในนาที
+  unsigned long ms_sec_diff = time_ms - ms_sec_buf;     // คำนวณความต่างของเวลาในวินาที
+  unsigned long server_time_sec;                        // ตัวแปรสำหรับเก็บค่าเวลาจากเซิร์ฟเวอร์ในหน่วยวินาที
+  unsigned long real_time_sec;                          // ตัวแปรสำหรับเก็บเวลาในปัจจุบันของบอร์ดในหน่วยวินาที
+
+  // ส่วนจัดการเวลาในหน่วยวินาที
+  if ( ms_sec_diff >= 1000 )  // ทุก ๆ 1 วินาที
+  {
+    ms_sec_buf = time_ms;     // อัปเดต buffer ของวินาที
+    time_10_sec++;            // เพิ่มจำนวนวินาทีที่ผ่านไปในตัวแปร time_10_sec
+    if(time_10_sec >= 10)     // เมื่อครบ 10 วินาที
+    {
+      time_10_sec = 0;        // รีเซ็ตตัวแปรนับเวลา 10 วินาที
+      Blynk.sendInternal("rtc", "sync");      // ส่งคำสั่งซิงค์เวลาไปยัง Blynk ทุก ๆ 10 วินาที
+    }    
+
+    // อัปเดตสถานะไปยัง Blynk
+    if ( flag_servo_on_buf != flag_servo_on )             // ถ้าค่าของการทำงานของเซอร์โวเปลี่ยนแปลง
+    {
+      if ( !((flag_servo_on==0)&&(feed_rep_count)) )      // ตรวจสอบเงื่อนไขการปิดการทำงานของเซอร์โวในกรณีที่ยังมีการป้อนอาหารซ้ำ
+      {
+        Blynk.virtualWrite(MANUAL_FEED, flag_servo_on);   // ส่งสถานะการทำงานของเซอร์โวไปยัง Blynk
+      }
+                   
+      flag_servo_on_buf = flag_servo_on;                  // อัปเดตสถานะเซอร์โวล่าสุดไปยัง buffer
+    }
+
+    if ( food_detected_timeout )              // ตรวจสอบว่ามีการนับถอยหลัง timeout สำหรับการตรวจจับอาหารอยู่หรือไม่
+      food_detected_timeout--;                // ถ้ามี ให้ลดค่าลงทีละ 1
+    
+    // ส่วนจัดการการทำงานของเซอร์โว
+    if ( flag_servo_on )                      // ถ้าตรวจพบว่าเซอร์โวเปิดการทำงาน
+    {
+      flag_servo_on = 0;                      // รีเซ็ต flag_servo_on กลับมาเป็น 0
+      
+      if ( feed_rep_count )                   // ถ้าจำนวนครั้งการป้อนอาหารซ้ำยังไม่หมด
+        feed_rep_count--;                     // ลดจำนวนครั้งการป้อนอาหารซ้ำลง 1
+
+      myservo.write(45);                      // หมุนเซอร์โวไปที่ตำแหน่ง 45 องศาเพื่อป้อนอาหาร
+
+      if ( pet_feed_count < 65535 )                       // ถ้ายอดการป้อนอาหารยังไม่เกินขีดจำกัดสูงสุด
+      {
+        pet_feed_count++;                                 // เพิ่มยอดการป้อนอาหารขึ้น 1
+        Blynk.virtualWrite(LCD_LINE_2, pet_feed_count);   // อัปเดตค่า feed count บนจอ LCD ใน Blynk
+        Blynk.virtualWrite(FEED_COUNT, pet_feed_count);   // ส่งค่า feed count ไปที่ Blynk
+      } 
+
+      if ( feed_rep_count == 0 )               // ถ้าไม่มีการป้อนอาหารซ้ำเหลืออยู่
+      {
+        Blynk.logEvent("feeding");             // บันทึก log ไปยัง Blynk ว่า feeding
+      }
+
+      food_detected_timeout = 3;               // ตั้งเวลา timeout สำหรับการตรวจว่ามีอาหารเหลืออยู่หรือไม่
+      flag_food_check = 0;                     // ปิดการตรวจว่ามีอาหารอยู่หรือไม่
+    }
+    else
+    {
+      if ( flag_food_check )                   // ตรวจว่ามีอาหารอยู่หรือไม่
+      {
+        if ( !EMPTY_FOOD )                     // ถ้าเจอว่ามีอาหารอยู่
+        {
+          flag_food_check = 0;                 // ปิดการตรวจอาหาร
+          food_detected_timeout = 0;           // รีเซ็ต timeout การตรวจอาหาร
+          Blynk.virtualWrite(LCD_LINE_1, "NORMAL");       // แสดงสถานะ "NORMAL" บนจอ LCD ใน Blynk App
+        }
+        else                                    // หากไม่พบอาหาร
+        {
+          if ( flag_servo_on_food_check )        // ถ้าเซอร์โวกำลังอยู่ในสถานะตรวจสอบอาหาร
+          {
+            flag_servo_on_food_check = 0;        // ปิดการทำงานของเซอร์โวที่ใช้ตรวจสอบอาหาร
+            myservo.write(45);                   // หมุนเซอร์โวไปที่ 45 องศาเพื่อตรวจสอบอาหาร
+            if ( food_check_count )              // ถ้าจำนวนรอบการตรวจสอบอาหารยังไม่หมด
+              food_check_count--;                // ลดจำนวนการตรวจสอบอาหารลง 1
+          }
+          else
+          {
+            myservo.write(0);                    // ถ้าไม่ตรวจสอบอาหาร ให้หมุนเซอร์โวกลับไปที่ตำแหน่ง 0 องศา
+            
+            if ( food_check_count )              // ถ้ามีรอบการตรวจสอบอาหารเหลืออยู่
+            { 
+              flag_servo_on_food_check = 1;      // เปิดการทำงานของเซอร์โวเพื่อตรวจสอบอาหารต่อ
+            }
+            else                                 // ถ้าไม่พบอาหารและการตรวจสอบหมดลง
+            {
+              flag_food_check = 0;               // ปิดการตรวจอาหาร
+              Blynk.logEvent("empty_food");      // บันทึก log ไปยัง Blynk ว่า empty_food
+              Blynk.virtualWrite(LCD_LINE_1, "EMPTY!!!");   // แสดงสถานะ "EMPTY!!!" บนจอ LCD ใน Blynk App
+            }
+          }
+        }
+      }
+      else                                       // ถ้าไม่ได้อยู่ในโหมดตรวจสอบอาหาร
+      {
+        myservo.write(0);                        // หมุนเซอร์โวกลับไปที่ 0 องศา
+  
+        if ( feed_rep_count )                    // ถ้ายังมีจำนวนครั้งการป้อนอาหารซ้ำเหลืออยู่
+        {
+          flag_servo_on = 1;                     // ถ้าใช่ ให้เปิดการทำงานของเซอร์โว
+        }
+        else                                     // ถ้าไม่มีการป้อนอาหารซ้ำเหลืออยู่
+        {
+          if ( food_detected_timeout )           // ถ้ามีการนับถอยหลัง timeout สำหรับการตรวจอาหารอยู่
+          {
+            if ( EMPTY_FOOD )                    // ถ้าอาหารหมด
+            {
+              flag_food_check = 1;               // เปิดการตรวจสอบอาหาร
+              food_check_count = 3;              // กำหนดจำนวนรอบการตรวจอาหารไว้ที่ 3            
+            }
+            else                                 // ถ้ามีอาหารเหลืออยู่
+            {
+              Blynk.virtualWrite(LCD_LINE_1, "NORMAL");  // แสดงสถานะ "NORMAL" บนจอ LCD ใน Blynk App
+            }
+          }
+        }
+      }
+    }  
+  }
+
+  // ส่วนจัดการเวลาในหน่วยนาที
+  if ( ms_min_diff >= 60000 )   // ทุก ๆ 1 นาที
+  {
+    ms_min_buf = time_ms;       // อัปเดต buffer ของนาที
+
+    // แปลงเวลาให้อยู่ในรูปแบบของวินาที
+    server_time_sec = (server_hour * 60 * 60) + (server_min * 60); 
+    real_time_sec = (rtc_hour * 60 * 60) + (rtc_min * 60);
+  
+    // ซิงค์เวลากับ Server เมื่อเวลาปัจจุบันของบอร์ด มีค่าต่างจาก Server มากกว่า 5 นาที
+    if   ( rtc_synchronized && 
+         (!(server_hour == 23 && server_min == 59 && rtc_hour == 0)) &&
+         (((server_time_sec > real_time_sec) && ((server_time_sec - real_time_sec) > 300)) || 
+         ((server_time_sec < real_time_sec) && ((real_time_sec - server_time_sec) > 300))) )
+         {
+            rtc_hour = server_hour;                 // อัปเดตชั่วโมงจากเซิร์ฟเวอร์
+            rtc_min = server_min;                   // อัปเดตนาทีจากเซิร์ฟเวอร์
+            rtc_weekday = server_weekday;           // อัปเดตวันในสัปดาห์จากเซิร์ฟเวอร์
+         }
+  
+    // อัพเดทเวลาในปัจจุบันของบอร์ด
+    rtc_min++;                // เพิ่มนาที
+    if (rtc_min >= 60)
+    {
+      rtc_min = 0;            // รีเซ็ตนาทีเมื่อครบ 60 นาที
+      rtc_hour++;             // เพิ่มชั่วโมง เมื่อครบ 60 นาที
+      if (rtc_hour >= 24)
+      {
+        rtc_hour = 0;         // รีเซ็ตชั่วโมงเมื่อครบ 24 นาที
+        rtc_weekday++;        // เพิ่มวันในสัปดาห์ เมื่อครบ 24 ชั่วโมง
+        if ( rtc_weekday > 7 )
+         rtc_weekday = 1;     // ถ้าวันเกิน 7 จะวนกลับไปที่ 1
+      }
+    }
+
+    // เช็คการเริ่มทำงานของเซอร์โว
+    for (int j=0; j<TIMER_NUMBER; j++)
+    {      
+      if ( feed_timer.flag_timer_en[j] &&                                                                       // ถ้าเปิดใช้งาน timer
+           (feed_timer.day_timer[j] == 0x00 || (feed_timer.day_timer[j] & (0x01 << (rtc_weekday - 1) ))) &&     // เช็ควัน
+           (( rtc_hour == feed_timer.start_time_hour[j] ) && ( rtc_min == feed_timer.start_time_min[j] )) )     // เช็คเวลา
+          {              
+            feed_rep_count = feed_timer.feed_repetition[j];                                                     // กำหนดจำนวนการจ่ายอาหาร
+            flag_servo_on = 1;                                                                                  // เปิดการทำงานของเซอร์โว
+          }                       
+    }      
+  
+    // ส่งค่าเวลาต่างๆ ออกทาง Serial monitor เพื่อตรวจสอบ
+    Serial.println("Server time: " + String(server_hour) + ":" + String(server_min));   // แสดงเวลาเซิร์ฟเวอร์
+    Serial.println(String("Server Weekday: ") + String(server_weekday));                // แสดงวันที่เซิร์ฟเวอร์
+    Serial.println("Real Time: " + String(rtc_hour) + ":" + String(rtc_min));           // แสดงเวลาของบอร์ด
+    Serial.println(String("RTC Weekday: ") + String(rtc_weekday));                      // แสดงวันที่ของบอร์ด
+    Serial.print("Blynk connection status: ");                                          // แสดงสถานะการเชื่อมต่อกับ Blynk
+    Serial.println (Blynk.connected());
+    Serial.println();
+  }  
+
+  // ซิงโครไนซ์เวลาใหม่เมื่อเชื่อมต่อกับเซิร์ฟเวอร์
+  if ( !Blynk.connected() )       // ตรวจสอบว่าการเชื่อมต่อกับ Blynk ล้มเหลวหรือไม่
+    rtc_synchronized = 0;         // ถ้าไม่เชื่อมต่อ ให้รีเซ็ตสถานะการซิงโครไนซ์ของ RTC
+}
+
+void setup()
+{
+  Serial.begin(9600);                           // เปิดใช้งาน Serial Monitor
+  pinMode(IR_SENSOR_PIN, INPUT_PULLUP);         // กำหนดขา IR_SENSOR_PIN เป็นขา input และเปิดใช้งานตัวต้านทาน pull-up ภายใน
+  myservo.attach(SERVO_PIN, 544, 2400);         // กำหนดขา SERVO_PIN ให้เชื่อมต่อกับเซอร์โวมอเตอร์ และกำหนดช่วงการทำงาน
+  myservo.write(0);                             // หมุนเซอร์โวมอเตอร์ไปยังตำแหน่งเริ่มต้น (0 องศา)
+  Blynk.begin(auth, ssid, pass);                // เริ่มต้นการเชื่อมต่อ Blynk ด้วยค่า auth, ssid, และ pass ที่ระบุไว้
+  dht.begin();                                  // เริ่มต้นการทำงานของเซ็นเซอร์ DHT11
+  timer.setInterval(2000L, sendSensorData);     // กำหนดให้ฟังก์ชัน sendSensorData ทำงานทุกๆ 2 วินาที
+  pinMode(TRIGPIN, OUTPUT);                     // กำหนดขา TRIGPIN ให้เป็น output สำหรับเซ็นเซอร์ระยะทาง Ultrasonic
+  pinMode(ECHOPIN, INPUT);                      // กำหนดขา ECHOPIN ให้เป็น input สำหรับรับค่าจากเซ็นเซอร์ Ultrasonic
+}
+
+void loop()
+{
+  Blynk.run();              // ให้ Blynk ทำงานในการรับส่งข้อมูลระหว่างอุปกรณ์กับแอป Blynk
+  timer.run();              // ให้ตัวจับเวลาของ Blynk ทำงานตามกำหนดเวลา
+  checkTime();              // เรียกใช้ฟังก์ชัน checkTime() เพื่อตรวจสอบและจัดการเวลา
+}
