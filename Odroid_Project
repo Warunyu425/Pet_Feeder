@@ -1,0 +1,39 @@
+import cv2 as cv  # นำเข้าไลบรารี OpenCV 
+from flask import Flask, Response  # นำเข้า Flask สำหรับสร้างเว็บแอปพลิเคชันและ Response สำหรับส่งข้อมูลแบบสตรีมมิ่ง
+cam = cv.VideoCapture(0)  # เปิดกล้องที่มีหมายเลขไดเร็กเตอร์เป็น 0 (มักเป็นกล้องหลักของคอมพิวเตอร์)
+if not cam.isOpened():
+    print("Error opening camera")  # หากไม่สามารถเปิดกล้องได้ ให้แสดงข้อความข้อผิดพลาด
+    exit() 
+# ตั้งค่าขนาดเฟรมวิดีโอให้เล็กลงเพื่อลดขนาดของข้อมูล
+cam.set(cv.CAP_PROP_FRAME_WIDTH, 320)  # กำหนดความกว้างของเฟรม
+cam.set(cv.CAP_PROP_FRAME_HEIGHT, 240)  # กำหนดความสูงของเฟรม
+
+# สร้างแอปพลิเคชัน Flask
+app = Flask(__name__)  # สร้างอินสแตนซ์ของ Flask โดยใช้ __name__ เพื่อกำหนดชื่อโมดูล
+
+#  ฟังก์ชันนี้จะสร้างและส่งเฟรมวิดีโอแบบสตรีมมิ่งต่อเนื่อง
+def generate_frames():
+    while True:
+        # จับภาพเฟรมจากกล้อง
+        success, frame = cam.read()  # อ่านเฟรมจากกล้อง
+        if not success:
+            break  
+        else:
+            # แปลงเฟรมเป็นภาพขาวดำ (grayscale)
+            gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+
+            # เข้ารหัสเฟรมในรูปแบบ JPEG ด้วยคุณภาพต่ำเพื่อลดขนาดไฟล์
+            ret, buffer = cv.imencode('.jpg', gray_frame, [cv.IMWRITE_JPEG_QUALITY, 50])
+            frame = buffer.tobytes()  # แปลงข้อมูลภาพที่เข้ารหัสเป็นไบต์
+
+            # ส่งเฟรมในรูปแบบที่เหมาะสมสำหรับสตรีมมิ่งผ่าน HTTP
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  # ส่งข้อมูลเป็น multipart
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), 
+                    mimetype='multipart/x-mixed-replace; boundary=frame')  # กำหนด MIME type สำหรับการสตรีมมิ่งแบบ multipart
+
+if __name__ == '__main__':  # ตรวจสอบว่าไฟล์นี้ถูกเรียกใช้เป็นสคริปต์หลัก
+    app.run(host='0.0.0.0', port=5000)  # รันแอป Flask บนโฮสต์ทั้งหมดที่สามารถเข้าถึงได้จากเครือข่ายภายในเครื่อง โดยใช้พอร์ต 5000
